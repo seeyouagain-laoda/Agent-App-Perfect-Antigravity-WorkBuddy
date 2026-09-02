@@ -1,0 +1,13 @@
+# 运行产物 / 本地状态
+*.png
+*.jsonl
+inbox.txt
+outbox.txt
+status.txt
+agy_raw_last.jsonl
+AGY直控验证_*.md
+
+# Python
+__pycache__/
+*.pyc
+.venv/
