@@ -57,8 +57,35 @@ agent_created: true
 3. 没有且是 Electron → 用 `launch_with_cdp.bat` 起带 CDP 端口的实例，再用 `cdp_control.py` 的 `probe` / `read` / `send` 验证能读写界面。
 4. 把最终能跑通的调用方式回填到本技能的 resources 区，下次直接复用。
 
+## agy / Antigravity 全流程操控（子模块）
+
+agy（Google 官方 AI 编码应用）是**路线 B 的完全体**：不仅能读写界面，还能派活、全程监督、
+切模型、落盘兜底、汉化恢复与实机验证。完整流程见 **`references/agy-supervise.md`**。
+
+脚本在 `scripts/agy/`（均已实测可用：端口动态解析、绕过代理、CDP 全带超时）：
+
+| 脚本 | 作用 |
+| --- | --- |
+| `agy_model.py` | 核心库 + CLI：`chip` / `list` / `select "<模型名>"`（Radix 真实鼠标切模型） |
+| `agy_state.py` | 探测空闲 / 生成中 / 报错 + 当前模型 |
+| `agy_supervise.py` | 派活 + 全程监督 + 落盘兜底（`AGY_OUT` 指定输出文件） |
+| `agy_switch.py` | 生成中 Stop → 切模型 → 继续（实测 agy 能用新模型续写，不崩、不报错） |
+| `agy_save_chat.py` | 从对话 innerText 提取 HTML 落盘（写盘权限框兜底） |
+| `agy_verify_cn.py` | 汉化验证，输出 `CN_OK` / `CN_FAIL` |
+
+三条铁律（详见 reference）：
+
+1. **端口必须动态读**（`%APPDATA%\Antigravity\DevToolsActivePort`）——agy 每次启动端口
+   都变（实测 9333 → 11182），硬编码在重启后必然失效。
+2. **连 127.0.0.1 必须绕代理**——否则死端口会被系统代理伪装成 HTTP 502。
+3. **CDP `recv()` 必须有超时**——无超时会永久卡死，只能靠外部 timeout 杀。
+
 ## Resources
 
 - `scripts/cdp_control.py` — 通用 CDP 驱动（list / probe / read / send / eval），内置 React 填字修复。
 - `scripts/launch_with_cdp.bat` — CDP 启动器模板（CRLF / ASCII / 绝对路径）。
-- `references/gotchas.md` — 三大根因与决策树细化（代理继承、React 受控组件、bat CRLF + 沙箱硬边界）。
+- `scripts/agy/*.py` — agy 全流程脚本（监督 / 切模型 / 落盘兜底 / 汉化验证）。
+- `references/gotchas.md` — 根因 1–7（代理继承、React 受控组件、bat CRLF、agy EOF、
+  写盘权限框、Stop 按钮判定、Radix 三前提）。
+- `references/agy-supervise.md` — agy 全流程操控（派活监督、切模型、落盘兜底、汉化恢复、
+  关键坑表、自测清单）。

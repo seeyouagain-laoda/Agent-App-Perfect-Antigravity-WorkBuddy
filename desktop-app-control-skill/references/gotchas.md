@@ -63,6 +63,38 @@
 - 成品其实已经生成在 agy 的「脑目录」：`~/.gemini/antigravity/brain/<session-uuid>/<文件名>`（单文件网页/产物都在这里）。
 - 检测到卡在写盘权限时，**放弃点 UI**，直接由监督方把脑目录里的成品 `shutil.copy2` 到目标路径（就是 agy 想做的那条 Copy-Item）。这比逼 UI 稳。
 - 更优的预防：**派活时直接让 agy 把产出写到它有权限、你也能访问的路径**（或让它把 HTML 直接内联打印），绕开「复制到桌面」这步权限。
+- **兜底手段升级（2026-09 实测）**：agy 有时会把**完整 HTML 直接打印在对话里**（末尾附 `@ Set-Content -Path ... -Value $html`）却根本不弹权限框、也不执行写盘（尤其「继续/续写」场景）。此时脑目录**也没有源**（因为走的是 Set-Content 直写桌面）。兜底：用 CDP 读 `document.body.innerText`，正则取最后一个完整 `<!DOCTYPE html>…</html>`（或 `<html…</html>`）块，剥掉 ``` 围栏，直接 `open(path,'w',encoding='utf-8').write` 落盘。见 `tmp_agy_save3.py`。
+
+## 根因 6：用「文字」判断任务完成必然误触发，只能看 Stop 按钮（路线 B 的假完成坑）
+
+**现象**：监督器派活后 5 秒就报 `COMPLETION SIGNAL detected`，然后报文件不存在。
+**原因**：判完成用了正则匹配 `document.body.innerText` 尾部的「已生成/已保存/已完成」。但
+1. 对话记录是**累积**的——上一轮回复里的「已生成 xxx.html」还挂在页面上；
+2. 更狠的是**我们自己的 prompt 也被回显在页面里**，而 prompt 里往往就写着「写完后回复一行『已生成 xxx』」，自己把自己匹配了；
+3. 还踩过 `body[-900]`（漏冒号）→ 只取到 1 个字符的低级 bug。
+
+**根治（模型无关、最可靠）**：用**生成态按钮**判定，而不是文字。
+```js
+// 生成中存在；生成结束消失
+document.querySelectorAll('button,[role=button]') 中 aria-label / innerText 命中
+/stop execution|cancel \(ctrl\+d\)|停止/i
+```
+判定规则：先等到 Stop 按钮**出现**（标记 `gen_seen=True`，最多等 60s），再等它**连续 3 次轮询（15s）消失**才算结束。辅助条件：目标文件已存在且 >4KB 也可提前收工。
+
+## 根因 7：Radix 模型选择器 —— 三个隐藏前提缺一不可（路线 B 的切模型坑）
+
+agy 的模型 chip（如 `Gemini 3.6 Flash Medium`）是 Radix 组件，自动化切模型必须同时满足：
+
+1. **只有 CDP 真鼠标有效**：`Input.dispatchMouseEvent`（mousePressed + mouseReleased）。JS `.click()`、合成 `MouseEvent`、`PointerEvent` **一律打不开**菜单。
+2. **必须点「最低」那个 chip 实例**：页面上有多个节点 textContent 等于模型名（页头静态标签、甚至生成出来的网页正文里的字样）。要过滤出**可见、且没有同文本子节点的最深节点**，再按 `getBoundingClientRect().top` 取**最大**的那个（=composer 上的 chip）。点错实例的表现是菜单「打开了但是空的」。
+3. **菜单行是 `role="menuitem"`，不是 `role="option"`**：只查 `[role=option]` 会永远得到 `opts=[]`，然后脚本拿着上一轮的陈旧坐标乱点。选择器要写 `[role=menuitem],[role=option],[role=menuitemradio]`，并**直接用行自己的 rect 中心**去点（别用「包含目标文字的最外层容器」的中心，那个中心会落在菜单外面）。
+
+另外：
+- 打开菜单要**带重试**（首次常失败），失败之间派发一次 `Escape` 再重试，间隔 1.4s，最多 6 次。
+- 整个 open→select→confirm 要走**同一条持久 WebSocket**（每条命令新建连接又慢又容易掉状态）。
+- 成功判据：重新读 chip 文本，最低那个已变成目标模型名（如 `Gemini 3.1 Pro Low`）。
+
+实测可选模型（2026-09）：`Gemini 3.8/3.7/3.6 Flash`(Medium/Fast)、`Gemini 3.1 Pro Low`、`Claude Sonnet 4.6 (Thinking)`、`Claude Opus 4.6 (Thinking)`、`GPT-OSS 120B (Medium)`。
 
 ## 沙箱硬边界（务必转交用户的那一步）
 
@@ -75,3 +107,6 @@ WorkBuddy 沙箱里 `cmd.exe`、真实 GUI、真实键鼠注入**全部被禁**�
 - [ ] 路线 B：`cdp_control.py --action probe` 与 `read` 能拿到界面文本；`send` 能真正发出一条消息。
 - [ ] 代理场景：子进程调用远端 API 不再 400（确认 `env` 注入了代理）。
 - [ ] agy 路线：派活后若崩 EOF，监督器能自动点 Retry 复活（见根因 4）；若卡在写盘权限，监督器能自动从 `~/.gemini/antigravity/brain/<uuid>/` 兜底复制成品（见根因 5）。
+- [ ] agy 路线：完成判定基于 Stop 按钮消失、**不是**文字匹配（见根因 6）；随手验一次「刚派活 5 秒内不许报完成」。
+- [ ] agy 路线：`tmp_agy_model.py list` 能列出 ≥7 个模型，`select "<模型名>"` 后 chip 文本确实变了（见根因 7）。
+- [ ] agy 路线：切模型续写验证——派活生成到一半点 Stop，用 `tmp_agy_model.py select` 切到另一个模型，发「继续」，确认 `resumed_generation=True` 且 transcript 继续增长、无 EOF/报错（切模型可继续，不崩）。
