@@ -11,7 +11,9 @@ Antigravity 官方引擎直控脚本（agy CLI）。
 用法：
   python run_agy.py "你的任务"                  # 跑一条任务，报告存桌面
   python run_agy.py "你的任务" --effort high     # 指定推理力度
+  python run_agy.py --file 任务.txt             # 从文件读任务（支持拖入 .txt）
   python run_agy.py --replay verify_run.jsonl    # 离线格式化已有流
+  python run_agy.py                             # 不带参数则交互输入任务
 """
 import sys, os, json, subprocess, datetime, argparse
 
@@ -116,11 +118,24 @@ def format_report(events, prompt, err=""):
     return "\n".join(L)
 
 
+def read_prompt_from_args(args):
+    prompt = args.prompt or ""
+    if args.file:
+        try:
+            with open(args.file, encoding="utf-8") as f:
+                prompt = f.read().strip()
+        except Exception as e:
+            print(f"[run_agy] 读任务文件失败: {e}")
+            sys.exit(1)
+    return prompt
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("prompt", nargs="?", default="")
     ap.add_argument("--effort", default="medium")
     ap.add_argument("--replay", default="")
+    ap.add_argument("--file", default="", help="从 .txt 文件读取任务（支持拖入）")
     args = ap.parse_args()
     if args.replay:
         events = []
@@ -132,12 +147,19 @@ def main():
         prompt = args.prompt or "（replay）"
         rep = format_report(events, prompt)
     else:
-        if not args.prompt:
-            print("用法: python run_agy.py \"任务\" [--effort low|medium|high]")
+        prompt = read_prompt_from_args(args)
+        if not prompt:
+            try:
+                prompt = input("请输入任务（直接回车退出）: ").strip()
+            except EOFError:
+                prompt = ""
+        if not prompt:
+            print('用法: python run_agy.py "任务" [--effort low|medium|high]')
+            print('       python run_agy.py --file 任务.txt   # 拖入 .txt 也行')
             sys.exit(1)
-        print(f"[run_agy] 派活中: {args.prompt[:40]} ...")
-        events, err = run_live(args.prompt, args.effort)
-        rep = format_report(events, args.prompt, err)
+        print(f"[run_agy] 派活中: {prompt[:40]} ...")
+        events, err = run_live(prompt, args.effort)
+        rep = format_report(events, prompt, err)
     ts = datetime.datetime.now().strftime("%H%M%S")
     out = os.path.join(DESKTOP, f"AGY直控验证_{ts}.md")
     with open(out, "w", encoding="utf-8") as f:

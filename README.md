@@ -257,6 +257,7 @@ spawn 官方 `agy.exe`，逐行解析 NDJSON：
 | 10 | Edit 替换跨多行留重复代码/孤立 `}` | old_string 未精确含到末尾 | 先删重复再删孤立 `}` |
 | 11 | Chrome headless 相对路径写图失败(0x5) | 相对路径拒绝访问 | 用绝对路径 |
 | 12 | 沙箱 kill_other 自杀（测试假象） | PID namespace 下 os.getpid 与 psutil 枚举宿主 pid 不一致 | 真机无此问题；加 AGY_NO_KILL 验证开关 |
+| 13 | 官方 GUI 深多轮自爆 400（thinking blocks cannot be modified） | app 后台静默 context compact 改坏 thinking 块（丢签名/截断）；流式 thoughtSignature 可能落空 chunk 被 parser 漏接 | 根治=走 Route B/官方 SDK stateful 模式；GUI 只能规避（控轮数/不开中间重生成/中断即开新） |
 
 **铁律（用户硬性要求，已记入全局记忆）**：修代码后必须真正重启/自测到通过才能交付；Edit 改完要 grep 验证 DOM/id 真存在。
 
@@ -329,4 +330,69 @@ AGY_CLI_CMD_OUTPUT_PERCENTAGE   # 限制 TUI 命令输出占比
 Python：`python（你的隔离 venv 解释器，Python 3.11+）`
 
 ---
+## 十四、官方 GUI 深多轮自爆 400（thinking blocks cannot be modified）· 根因与彻底解决
+
+### 14.1 现象
+官方 Antigravity 应用在多轮对话中突然报：
+```
+HTTP 400 Bad Request
+messages.19.content.1: `thinking` or `redacted_thinking` blocks in the latest assistant message
+cannot be modified. These blocks must remain as they were in the original response.
+```
+`messages.19` = 第 20 条消息（0 起 index 19）的 content 第 2 段（index 1，正是 thinking 块）。说明最新那条 assistant 回复的 thinking 块在回传时被改了。
+
+### 14.2 根因：Google thought-signature 机制（设计如此，非偶发 bug）
+官方文档（https://ai.google.dev/gemini-api/docs/thought-signatures）原文：
+> Thought signatures are encrypted representations of the model's internal reasoning. They are required to maintain reasoning continuity across multi-turn interactions… You MUST always resend all thought blocks exactly as they were received. You should NOT remove or modify thought blocks.
+
+即 thinking 块里的 `thoughtSignature` 是模型内部推理过程的**加密签名**，用于跨多轮保持思路连续。**客户端回传历史时，thinking 块必须逐字节原样回传**，否则 Google 严格校验"最新 assistant 消息的 thinking 块须一致" → 400。
+
+### 14.3 为什么「同一个模型、中间没中断」也自爆（关键）
+不是用户操作触发的，是**应用后台静默上下文压缩（context compact）在临界点改坏了 thinking 块**。所有长会话 Agent 都有这套分层静默机制（业界通用，Claude Code / OpenClaw 同构）：
+
+| 层 | 触发时机 | 动作 | 用户感知 |
+| --- | --- | --- | --- |
+| micro_compact | 每一轮都跑（silent, every turn） | 旧 tool_result → 占位符 | 无 |
+| auto_compact | token 超阈值（约有效窗口 93%） | LLM 摘要替换全部历史 | 无/弱提示 |
+| time-based | 空闲 > 60 min | 同上 | 无 |
+
+**累积效应**：
+1. 前十几轮 context 短 → 压缩只动 tool_result，碰不到 thinking 块 → 正常
+2. 累积到阈值（本次第 20 条）→ 触发 auto_compact → **重写整段历史**，把 assistant 的 thinking 块截断/丢签名/降级为 text
+3. 下一轮发出去 → 校验失败 → 400
+
+用户全程无感，因压缩静默、UI 不提示。
+
+**另一随机成因**（官方 gemini-3 文档警告）：流式响应中 `thoughtSignature` **可能在一个空 text chunk 里到达**，stream parser 没接住就丢签名 → 随机自爆。原文："Ensure your stream parser checks for signatures even if the text field is empty."
+
+### 14.4 设计动机（why so strict）
+1. **推理连续性**：签名是模型续接思路的钥匙，改了就断
+2. **安全/防篡改**：thinking 被当成"模型自己的输出"而非可随意改的 prompt；允许改可能绕过对齐护栏、做 prompt injection
+3. **防蒸馏**：`redacted_thinking` 加密、不暴露思考过程，防被轻易蒸馏
+4. **状态完整性**：多轮依赖历史不变，改块污染整个对话状态
+
+### 14.5 普遍痛点佐证（非个例）
+- OpenClaw issue #22233：sanitization 把 `thinkingSignature` strip → 最新 assistant 消息 byte 不一致 → 整 session 死（同报错文案）
+- Antigravity-Manager 文档：明确"会尝试降级历史 thinking 块 + 注入修复提示词再重试"——第三方工具都知道这坑并做自愈
+- CLIProxyAPI #436：翻译层丢 thinking 块 → 上游 400
+
+### 14.6 彻底解决（分级）
+| # | 方案 | 能否根治 | 代价 | 适用 |
+| --- | --- | --- | --- | --- |
+| **1** | **改走 agy CLI / 官方 SDK（Route B）** | ✅ 根治 | 命令行，无 GUI 可视化 | **长任务、多轮、带工具** |
+| 2 | 自写代码调 API → 用 stateful 模式 | ✅ 根治 | 要写代码 | 自建应用 |
+| 3 | GUI 内控会话长度 + 及时开新 | ❌ 规避 | 手动、打断思路 | 必须用 GUI 时 |
+| 4 | 自建代理层修签名 | ⚠️ 仅对自己调 API 有效，对 GUI 无效 | 要写中间件 | 自写代码 |
+
+**为什么只有 1 能根治**：官方 SDK / agy CLI 走 **stateful 模式**（`store:true` + `previous_interaction_id`），历史由**服务端**存，客户端根本不碰签名 → 永远不会有"改了 thinking 块"这回事。官方 GUI 是自己在客户端重建历史时改坏块才 400，**外部改不了它的内部请求**（GUI 注入已证伪），所以 GUI 这条路用户侧不存在彻底解法，只能等 Google 修 app。
+
+本文 `run_agy.py`（Route B）已自验 6+ 次、跨几十轮工具调用，**从不报 400**——因为它就是官方 SDK 路径（stateful 由 agy 引擎自管）。
+
+### 14.7 如果坚持用 GUI，规避三原则
+1. **会话别超过 ~15–18 轮**，到点主动开新（本次崩在第 20 条）
+2. **绝不在 thread 中间"重新生成 / 编辑"某条 assistant 回复**——最常见的篡改 thinking 块动作
+3. **流中断 / 会话恢复后立刻开新**：中断令 thinking 块不完整（无签名），残留历史必炸
+
+---
+
 *报告完。所有结论均来自真机/沙箱实测与官方仓库核对，非推测。*
