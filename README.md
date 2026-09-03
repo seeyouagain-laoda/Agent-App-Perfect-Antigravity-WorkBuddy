@@ -299,3 +299,12 @@ python agi_cdp.py --port 9333 send "请只回复两个字：OK"  # 填 + 发，�
 ---
 
 *本文档为公开脱敏版，所有用户名 / 本机路径 / 代理端口已替换为占位符或示例，无敏感凭据泄露。*
+
+## 附：通用 Skill（desktop-app-control）
+
+本文的「AI 操控桌面软件」方法论已沉淀为可复用的 WorkBuddy 通用技能，不限于 Antigravity——任意桌面软件都能套用（有 CLI/MCP 走程序化，Electron 走 CDP）。
+
+- 目录：`desktop-app-control-skill/`
+- 内容：`SKILL.md`（双路线方法论 + 决策树）、`scripts/cdp_control.py`（通用 CDP 驱动：list/probe/read/send/eval，含 React 填字修复）、`scripts/launch_with_cdp.bat`（CDP 启动器模板）、`references/gotchas.md`（三大根因踩坑）。
+- 安装：把 `desktop-app-control-skill/` 整体复制到 `~/.workbuddy/skills/desktop-app-control/` 即可被 WorkBuddy 识别并自动加载。
+- 本目录同样为脱敏版（仅 localhost 示例与占位路径，无凭据泄露）。
